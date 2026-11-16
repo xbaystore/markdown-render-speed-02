@@ -90,6 +90,7 @@ function entitySpanAt(s, i) {
 // markup character), & < > " ' are escaped, and an '&' that opens an
 // entity-looking span is left as it is.
 export function escapeText(s) {
+  if (!/[&<>"']/.test(s)) return s;
   let out = '';
   let i = 0;
   const n = s.length;
@@ -129,17 +130,10 @@ export function escapeText(s) {
 
 // Escape code content (spans and blocks): every markup character is
 // escaped, nothing is decoded or spared.
+const ESC_CODE_RE = /[&<>"']/;
 export function escapeCode(s) {
-  let out = '';
-  let plainStart = 0;
-  for (let i = 0; i < s.length; i++) {
-    const rep = ESC_MAP[s[i]];
-    if (rep) {
-      out += s.slice(plainStart, i) + rep;
-      plainStart = i + 1;
-    }
-  }
-  return plainStart === 0 ? s : out + s.slice(plainStart);
+  if (!ESC_CODE_RE.test(s)) return s;
+  return s.replace(/[&<>"']/g, (ch) => ESC_MAP[ch]);
 }
 
 // Escape an attribute value (href after cleaning, title, alt): like text
@@ -890,7 +884,9 @@ function isPunctCh(ch) {
   return ch !== '' && (ASCII_PUNCT.has(ch) || PUNCT_RE.test(ch));
 }
 function isAlnumCh(ch) {
-  return /[A-Za-z0-9]/.test(ch);
+  if (!ch) return false;
+  const c = ch.charCodeAt(0);
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
 }
 
 // CommonMark flanking for a delimiter run of ch with neighbours prev/next
@@ -952,9 +948,13 @@ function altText(list) {
 // Cheap pre-check + match for a GFM bare autolink at position i whose
 // preceding character allows one. Returns {href, text, end} or null.
 function tryGfm(s, i, list) {
-  const head = s.slice(i, i + 8).toLowerCase();
-  if (s.startsWith('www.', i) || head.startsWith('http://') || head.startsWith('https://')) {
-    return matchGfmAutolink(s, i, list);
+  if (s.startsWith('www.', i)) return matchGfmAutolink(s, i, list);
+  const c0 = s[i];
+  if (c0 === 'h' || c0 === 'H') {
+    const head = s.slice(i, i + 8).toLowerCase();
+    if (head.startsWith('http://') || head.startsWith('https://')) {
+      return matchGfmAutolink(s, i, list);
+    }
   }
   // Email: only when an '@' shows up soon with no gap.
   const at = s.indexOf('@', i);
@@ -977,7 +977,7 @@ function scanInlineRaw(s, ctx, inLink, noEm) {
   // labels — so an opener inside a label can mask emphasis sitting
   // between it and a later run of the same length.
   const maskSpans = [];
-  {
+  if (s.includes('`')) {
     let j = 0;
     const n0 = s.length;
     while (j < n0) {
@@ -1005,12 +1005,13 @@ function scanInlineRaw(s, ctx, inLink, noEm) {
       }
     }
   }
+  // Callers query inMask with non-decreasing positions, so a moving
+  // span pointer gives the same answers as a full scan.
+  let maskIdx = 0;
   const inMask = (pos) => {
-    for (let q = 0; q < maskSpans.length; q++) {
-      if (pos < maskSpans[q][0]) return false;
-      if (pos < maskSpans[q][1]) return true;
-    }
-    return false;
+    while (maskIdx < maskSpans.length && pos >= maskSpans[maskIdx][1]) maskIdx++;
+    if (maskIdx >= maskSpans.length) return false;
+    return pos >= maskSpans[maskIdx][0] && pos < maskSpans[maskIdx][1];
   };
   let buf = '';
   const flush = () => {
@@ -1535,7 +1536,11 @@ function inlineHtml(s, ctx, inLink) {
 /* ------------------------------------------------------------------ */
 
 function isBlank(line) {
-  return /^[ \t]*$/.test(line);
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c !== ' ' && c !== '\t') return false;
+  }
+  return true;
 }
 
 // Width of the leading whitespace of a line, in columns (a tab advances
@@ -1642,11 +1647,29 @@ function stripBqPrefix(line) {
 }
 
 function matchFenceOpen(line) {
-  const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-  if (!m) return null;
-  if (m[1][0] === '`' && m[2].includes('`')) return null;
-  const indent = /^ */.exec(line)[0].length;
-  return { ch: m[1][0], len: m[1].length, info: m[2].trim(), indent };
+  let sp = 0;
+  while (line[sp] === ' ') sp++;
+  if (sp > 3) return null;
+  const ch = line[sp];
+  if (ch !== '`' && ch !== '~') return null;
+  let len = 0;
+  while (line[sp + len] === ch) len++;
+  if (len < 3) return null;
+  const rest = line.slice(sp + len);
+  if (ch === '`' && rest.includes('`')) return null;
+  return { ch, len, info: rest.trim(), indent: sp };
+}
+
+// Manual equivalent of /^ {0,3}<ch>{len,}[ \t]*$/ for a fence closer.
+function fenceCloseMatch(line, ch, len) {
+  let i = 0;
+  while (i < 3 && line[i] === ' ') i++;
+  let run = 0;
+  while (line[i + run] === ch) run++;
+  if (run < len) return false;
+  let k = i + run;
+  while (k < line.length && (line[k] === ' ' || line[k] === '\t')) k++;
+  return k === line.length;
 }
 
 function matchAtx(line) {
@@ -2049,7 +2072,7 @@ function bqLazyOk(inner, line) {
   let fenceLen = 0;
   for (const l of inner) {
     if (inFence) {
-      if (new RegExp('^ {0,3}' + fenceCh + '{' + fenceLen + ',}[ \\t]*$').test(l)) inFence = false;
+      if (fenceCloseMatch(l, fenceCh, fenceLen)) inFence = false;
     } else {
       const fo = matchFenceOpen(l);
       if (fo) {
@@ -2153,6 +2176,32 @@ function gatherItem(cl, cur, b, mi, kind, ctx) {
   const L = cl.lines;
   const ci = mi.contentIndent;
   const itemLines = [mi.rest];
+  // Incremental equivalent of itemFenceState(itemLines), updated as
+  // lines are appended instead of rescanning the item from scratch
+  // for every following line.
+  let fsIn = false;
+  let fsCh = '';
+  let fsLen = 0;
+  let fsContent = 0;
+  const fsFeed = (l) => {
+    if (fsIn) {
+      if (fenceCloseMatch(l, fsCh, fsLen)) fsIn = false;
+      else fsContent++;
+    } else {
+      const fo = matchFenceOpen(l);
+      if (fo) {
+        fsIn = true;
+        fsCh = fo.ch;
+        fsLen = fo.len;
+        fsContent = 0;
+      }
+    }
+  };
+  fsFeed(mi.rest);
+  const pushLine = (l) => {
+    itemLines.push(l);
+    fsFeed(l);
+  };
   const lazyIdx = new Set();
   let lastParent = cur;
   let j = cur + 1;
@@ -2232,9 +2281,8 @@ function gatherItem(cl, cur, b, mi, kind, ctx) {
     // An unanchored fence (no content line yet) falls through to the
     // normal line rules, so a dedented first line ends the item and
     // leaves the fence empty.
-    const fst = itemFenceState(itemLines);
-    if (fst.inFence && fst.contentLines > 0) {
-      itemLines.push(expandLeadingTabs(stripCols(line, ci), ci));
+    if (fsIn && fsContent > 0) {
+      pushLine(expandLeadingTabs(stripCols(line, ci), ci));
       lastParent = j;
       j++;
       continue;
@@ -2252,7 +2300,7 @@ function gatherItem(cl, cur, b, mi, kind, ctx) {
       }
       if (indentCols(nl) >= ci) {
         for (let x = j; x < k; x++) {
-          itemLines.push('');
+          pushLine('');
           lastParent = x;
         }
         blankInside = true;
@@ -2262,7 +2310,7 @@ function gatherItem(cl, cur, b, mi, kind, ctx) {
       return finish(k, true);
     }
     if (indentCols(line) >= ci) {
-      itemLines.push(expandLeadingTabs(stripCols(line, ci), ci));
+      pushLine(expandLeadingTabs(stripCols(line, ci), ci));
       lastParent = j;
       j++;
       continue;
@@ -2275,7 +2323,7 @@ function gatherItem(cl, cur, b, mi, kind, ctx) {
     if (sm) return finish(j, true);
     if (itemLazyOk(itemLines, line)) {
       lazyIdx.add(itemLines.length);
-      itemLines.push(indentCols(line) >= 4 ? stripCols(line, 4) : line);
+      pushLine(indentCols(line) >= 4 ? stripCols(line, 4) : line);
       lastParent = j;
       j++;
       continue;
@@ -2324,11 +2372,10 @@ function parseBlocks(cl, a, b, ctx) {
     }
     const fo = matchFenceOpen(line);
     if (fo) {
-      const closeRe = new RegExp('^ {0,3}' + fo.ch + '{' + fo.len + ',}[ \\t]*$');
       const content = [];
       let j = i + 1;
       while (j < b) {
-        if (closeRe.test(L[j])) {
+        if (fenceCloseMatch(L[j], fo.ch, fo.len)) {
           j++;
           break;
         }
