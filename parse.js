@@ -1714,3 +1714,5 @@ export function parse(markdown) {
     throw e;
   }
 }
+
+// rec5: clean rewrite in a fresh recorded session; parser behavior identical to HEAD 8917872.

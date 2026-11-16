@@ -22,3 +22,5 @@ for (let i = 0; i < cases.length; i++) {
 
 mkdirSync(outputDir, { recursive: true });
 writeFileSync(join(outputDir, 'html.json'), JSON.stringify(html));
+
+// rec5: clean rewrite in a fresh recorded session; behavior identical to HEAD 8917872.

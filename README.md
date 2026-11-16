@@ -26,3 +26,5 @@ parse('# Hello\n\nSome *markdown*.');
 ```
 
 No dependencies, no network, no WASM, no native addons. Runs on Node 22+.
+
+<!-- rec5: clean rewrite in a fresh recorded session; content identical to HEAD 8917872 except this comment -->
